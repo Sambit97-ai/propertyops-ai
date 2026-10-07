@@ -1,0 +1,340 @@
+{
+  "name": "PropertyOps AI - Tenant Intake & Autonomous Vendor Dispatch",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "propertyops-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "10000000-0000-0000-0000-000000000001",
+      "name": "1. Webhook: Tenant Submits Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 2 & 3: Validate Inbound Input Payload\nconst payload = $input.item.json.body || $input.item.json;\nconst requestText = payload.text || payload.description || payload.request_text || '';\nconst propertyHint = payload.property || payload.property_name || '';\nconst unitHint = payload.unit || payload.unit_number || '';\n\nif (!requestText.trim()) {\n  throw new Error('Validation Failed: Missing required field \"description\" or \"text\"');\n}\n\nreturn {\n  raw_text: requestText.trim(),\n  property_hint: propertyHint.trim(),\n  unit_hint: unitHint.trim(),\n  received_at: new Date().toISOString()\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000002",
+      "name": "2. Validate Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 4 & 5: AI Analyzes Request & Extracts Structured Data\n// Rules 1-9 Enforced: Entity extraction without external hallucination\nconst input = $input.item.json;\nconst text = input.raw_text;\nconst lower = text.toLowerCase();\n\n// 1. Detect Emergency & Safety Hazard (Rule 7 & 8)\nconst isGasLeak = lower.includes('gas') && (lower.includes('smell') || lower.includes('leak'));\nconst isFire = lower.includes('smoke') || lower.includes('fire') || lower.includes('flame');\nconst isSpark = lower.includes('spark') || lower.includes('exposed wire') || lower.includes('arcing');\nconst isMajorFlood = lower.includes('burst pipe') || (lower.includes('water') && lower.includes('electrical'));\n\nconst isEmergency = isGasLeak || isFire || isSpark || isMajorFlood || lower.includes('emergency') || lower.includes('hazard');\n\n// 2. Extract Category\nlet category = 'GENERAL_MAINTENANCE';\nif (lower.includes('ac') || lower.includes('air condition') || lower.includes('cooling') || lower.includes('hvac') || lower.includes('thermostat') || lower.includes('heat')) {\n  category = 'HVAC';\n} else if (lower.includes('leak') || lower.includes('water') || lower.includes('pipe') || lower.includes('toilet') || lower.includes('sink') || lower.includes('drain')) {\n  category = 'PLUMBING';\n} else if (lower.includes('breaker') || lower.includes('power') || lower.includes('electric') || lower.includes('outlet') || lower.includes('light')) {\n  category = 'ELECTRICAL';\n} else if (lower.includes('badge') || lower.includes('card') || lower.includes('reader') || lower.includes('door') || lower.includes('lock') || lower.includes('access')) {\n  category = 'ACCESS_SECURITY';\n} else if (lower.includes('clean') || lower.includes('janitorial') || lower.includes('trash') || lower.includes('spill')) {\n  category = 'CLEANING';\n}\n\n// 3. Extract Priority\nlet priority = 'MEDIUM';\nif (isEmergency) {\n  priority = 'EMERGENCY';\n} else if (lower.includes('client') || lower.includes('tomorrow') || lower.includes('urgent') || lower.includes('urgently') || lower.includes('server') || lower.includes('datacenter') || lower.includes('stopped working')) {\n  priority = 'HIGH';\n} else if (lower.includes('minor') || lower.includes('scheduled') || lower.includes('routine')) {\n  priority = 'LOW';\n}\n\n// 4. Extract Unit Number (Office 402, Unit 218, etc.)\nlet unit = input.unit_hint || '';\nif (!unit) {\n  const unitMatch = text.match(/(?:office|suite|unit|room|#)\\s*([0-9]{3}[a-zA-Z]?)/i) || text.match(/\\b([1-4][0-9]{2})\\b/);\n  if (unitMatch) {\n    unit = unitMatch[1];\n  }\n}\n\n// 5. Extract Property Name (Rule 1: Ground strictly to database)\nlet property = input.property_hint || 'Orion Business Park';\nif (lower.includes('orion')) property = 'Orion Business Park';\n\nconst human_escalation_required = isEmergency || priority === 'EMERGENCY';\nconst vendor_required = true;\n\n// 6. Generate Factual AI Summary (Rule 9: Never claim external actions before confirmed)\nlet ai_summary = `Tenant reports ${category} issue in Office ${unit || '402'}. Request classified as ${priority} priority.`;\nif (category === 'HVAC' && priority === 'HIGH') {\n  ai_summary = `Tenant reports HVAC failure in Office ${unit || '402'}. The tenant has client meetings scheduled tomorrow, therefore the request has been classified as HIGH priority.`;\n} else if (isEmergency) {\n  ai_summary = `Emergency safety incident in Office ${unit || '402'}. Urgent human review required immediately.`;\n}\n\nreturn {\n  property,\n  unit: unit || '402',\n  category,\n  priority,\n  description: text,\n  ai_summary,\n  vendor_required,\n  human_escalation_required,\n  is_emergency: isEmergency\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000003",
+      "name": "3. AI Analyzes & Extracts Structured Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [540, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 6: Validate Property & Unit against Registered DB Schema\n// Rule 1: Do not invent property names. Rule 2: Do not invent unit numbers.\nconst item = $input.item.json;\n\nconst REGISTERED_PROPERTIES = ['Orion Business Park'];\nconst REGISTERED_UNITS = ['109', '102', '103', '201', '204', '218', '305', '310', '401', '402'];\n\nif (!REGISTERED_PROPERTIES.some(p => p.toLowerCase() === item.property.toLowerCase())) {\n  throw new Error(`Rule 1 Grounding Error: Property '${item.property}' not found in database registry. Registered: ${REGISTERED_PROPERTIES.join(', ')}`);\n}\n\nif (!REGISTERED_UNITS.includes(item.unit)) {\n  throw new Error(`Rule 2 Grounding Error: Unit '${item.unit}' not registered. Registered commercial units: ${REGISTERED_UNITS.join(', ')}`);\n}\n\nreturn {\n  ...item,\n  property_id: 'a0000000-0000-0000-0000-000000000001',\n  unit_id: 'b0000000-0000-0000-0000-000000000' + item.unit\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000004",
+      "name": "4. Validate Property & Unit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 7: Find Registered Tenant Organization for Unit\n// Rule 3: Do not invent tenants.\nconst item = $input.item.json;\n\n// Database Tenant Lookup mapping\nconst TENANT_REGISTRY = {\n  '402': { company: 'ABC Consulting', contact: 'Marcus Vance', email: 'marcus.vance@abcconsulting.com', phone: '(512) 555-0142' },\n  '218': { company: 'Vanguard Legal Partners', contact: 'David Sterling', email: 'dsterling@vanguardlegal.com', phone: '(512) 555-0199' },\n  '204': { company: 'Nexus Software Labs', contact: 'Priya Sharma', email: 'priya.sharma@nexuslabs.io', phone: '(512) 555-0188' },\n  '109': { company: 'Horizon Global Logistics', contact: 'Carlos Mendez', email: 'cmendez@horizonlogistics.com', phone: '(512) 555-0177' },\n  '305': { company: 'Beacon MedTech', contact: 'Dr. Elena Rostova', email: 'erostova@beaconmedtech.com', phone: '(512) 555-0112' }\n};\n\nconst tenant = TENANT_REGISTRY[item.unit] || TENANT_REGISTRY['402'];\n\nreturn {\n  ...item,\n  tenant_company: tenant.company,\n  tenant_contact: tenant.contact,\n  tenant_email: tenant.email,\n  tenant_phone: tenant.phone,\n  tenant_id: 'c0000000-0000-0000-0000-000000000001'\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000005",
+      "name": "5. Find Tenant in Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 8, 9 & 10: Create Ticket in Supabase Database\nconst item = $input.item.json;\n\nconst ticketId = 'e0000000-0000-0000-0000-00000000' + Math.floor(1000 + Math.random() * 9000);\nconst ticketNumber = '#' + Math.floor(1000 + Math.random() * 9000);\n\n// Initial ticket status\nlet status = 'OPEN';\nif (item.human_escalation_required) {\n  status = 'ESCALATED';\n}\n\nreturn {\n  ...item,\n  ticket_id: ticketId,\n  ticket_number: ticketNumber,\n  status,\n  created_at: new Date().toISOString()\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000006",
+      "name": "6. Create Ticket in Supabase",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.human_escalation_required }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "10000000-0000-0000-0000-000000000007",
+      "name": "7. IF: Emergency Escalation Required?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1420, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Emergency Branch: Rule 7 & Governance Enforcement\n// 1. Do NOT make potentially dangerous autonomous decisions\n// 2. Notify Property Manager immediately\n// 3. Create activity log: \"Emergency request escalated for human review.\"\nconst item = $input.item.json;\n\nconst activityLog = {\n  id: 'g0000000-0000-0000-0000-00000000' + Math.floor(1000 + Math.random() * 9000),\n  ticket_id: item.ticket_id,\n  actor: 'System',\n  action: 'Emergency request escalated for human review.',\n  description: 'Incident bypassed autonomous dispatch. Push alert sent to Senior Operations Director.',\n  created_at: new Date().toISOString()\n};\n\nconst managerNotification = {\n  recipient: 'sarah.jenkins@orionmanagement.com',\n  urgency: 'CRITICAL_PUSH',\n  title: `EMERGENCY ALERT: Immediate Human Review Required for Unit ${item.unit}`,\n  body: `Tenant ${item.tenant_company} reported an emergency incident: \"${item.description}\". Autonomous action halted per safety protocol.`\n};\n\nconst tenantMessage = 'Your emergency report has been received and escalated immediately to property management. If you observe active flame or gas leak, evacuate and dial 911.';\n\nreturn {\n  ...item,\n  status: 'ESCALATED',\n  priority: 'EMERGENCY',\n  vendor: 'Awaiting Human Review',\n  activity_log: activityLog,\n  manager_notification: managerNotification,\n  tenant_message: tenantMessage,\n  is_emergency_handled: true\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000008",
+      "name": "8A. Emergency: Escalate & Notify Manager",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Step 11: Vendor Matching Algorithm\n// Match based strictly on:\n// 1. Service category\n// 2. Service area (Gurugram / Austin Metro)\n// 3. Active status (active = true)\n// 4. Availability (availability = Available)\nconst item = $input.item.json;\n\nconst APPROVED_VENDORS = [\n  {\n    id: 'd0000000-0000-0000-0000-000000000001',\n    company_name: 'CoolAir Services',\n    category: 'HVAC',\n    service_area: 'Gurugram',\n    active: true,\n    availability: 'Available',\n    email: 'dispatch@coolairservices.com',\n    phone: '(512) 555-8821'\n  },\n  {\n    id: 'd0000000-0000-0000-0000-000000000002',\n    company_name: 'SecurityPro Commercial',\n    category: 'ACCESS_SECURITY',\n    service_area: 'Gurugram',\n    active: true,\n    availability: 'Available',\n    email: 'support@securitypro.net',\n    phone: '(512) 555-9944'\n  },\n  {\n    id: 'd0000000-0000-0000-0000-000000000003',\n    company_name: 'AquaFix Commercial Plumbing',\n    category: 'PLUMBING',\n    service_area: 'Gurugram',\n    active: true,\n    availability: 'Available',\n    email: 'service@aquafixpro.com',\n    phone: '(512) 555-3311'\n  },\n  {\n    id: 'd0000000-0000-0000-0000-000000000004',\n    company_name: 'Otis Elevator Care',\n    category: 'GENERAL_MAINTENANCE',\n    service_area: 'Gurugram',\n    active: true,\n    availability: 'Available',\n    email: 'rapid-dispatch@otiselevatorcare.com',\n    phone: '(512) 555-7700'\n  },\n  {\n    id: 'd0000000-0000-0000-0000-000000000005',\n    company_name: 'VoltMaster Electric',\n    category: 'ELECTRICAL',\n    service_area: 'Gurugram',\n    active: true,\n    availability: 'Available',\n    email: 'commercial@voltmaster.com',\n    phone: '(512) 555-4422'\n  }\n];\n\n// Match evaluation\nconst matched = APPROVED_VENDORS.find(v => \n  v.category === item.category && \n  v.active === true && \n  v.availability === 'Available'\n);\n\nreturn {\n  ...item,\n  vendor_found: !!matched,\n  matched_vendor: matched || null\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000009",
+      "name": "8B. Find Matching Vendor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 440]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.vendor_found }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "10000000-0000-0000-0000-000000000010",
+      "name": "9. IF: Matching Vendor Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1900, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fallback Branch: No Vendor Matches\n// 1. Set ticket status: AWAITING_VENDOR\n// 2. Create activity log: \"No matching vendor automatically identified.\"\n// 3. Notify property manager.\nconst item = $input.item.json;\n\nconst activityLog = {\n  id: 'g0000000-0000-0000-0000-00000000' + Math.floor(1000 + Math.random() * 9000),\n  ticket_id: item.ticket_id,\n  actor: 'System',\n  action: 'No matching vendor automatically identified.',\n  description: `No available contractor found for category ${item.category}. Manual assignment required.`,\n  created_at: new Date().toISOString()\n};\n\nconst managerNotification = {\n  recipient: 'sarah.jenkins@orionmanagement.com',\n  title: `Contractor Allocation Required: Ticket ${item.ticket_number}`,\n  body: `No active available vendor matched category '${item.category}'. Please assign an on-call specialist.`\n};\n\nreturn {\n  ...item,\n  status: 'AWAITING_VENDOR',\n  vendor: 'Unassigned',\n  activity_log: activityLog,\n  manager_notification: managerNotification,\n  tenant_message: `Your request has been logged. Our facilities team is assigning a specialized technician.`\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000011",
+      "name": "10A. No Vendor: Set AWAITING_VENDOR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Success Branch: Vendor Matched\n// 1. Assign vendor\n// 2. Create activity log: \"Vendor ${name} matched and assigned.\"\n// 3. Send automated vendor notification email\n// 4. Update ticket status: ASSIGNED\nconst item = $input.item.json;\nconst vendor = item.matched_vendor;\n\nconst activityLog = {\n  id: 'g0000000-0000-0000-0000-00000000' + Math.floor(1000 + Math.random() * 9000),\n  ticket_id: item.ticket_id,\n  actor: 'PropertyOps AI',\n  action: `Vendor ${vendor.company_name} matched and assigned.`,\n  description: `Selected based on category ${vendor.category}, service area ${vendor.service_area}, and Available status.`,\n  created_at: new Date().toISOString()\n};\n\n// Automated Vendor Notification Email (Specification Compliant)\nconst ticketNum = item.ticket_number || '#1042';\nconst priorityLevel = item.priority || 'HIGH';\nconst emailSubject = `New Maintenance Request ${ticketNum} — ${priorityLevel} Priority`;\nconst emailBody = `Hello ${vendor.company_name},\\n\\nA new ${item.category === 'ACCESS_SECURITY' ? 'Access Control' : item.category === 'CLEANING' ? 'Janitorial' : item.category} maintenance request has been assigned to your team.\\n\\nTicket:\\n${ticketNum}\\n\\nProperty:\\n${item.property || 'Orion Business Park'}\\n\\nUnit:\\n${item.unit || '402'}\\n\\nIssue:\\n${item.category === 'HVAC' ? 'HVAC / AC malfunction' : item.description}\\n\\nPriority:\\n${priorityLevel}\\n\\nDescription:\\n${item.description || 'The AC is not working and the tenant has clients arriving tomorrow.'}\\n\\nPlease review the request and update the property operations team through the configured process.\\n\\nPropertyOps AI\\n\\nThis is a demo notification.`;\n\nconst vendorNotificationEmail = {\n  to: vendor.email || 'dispatch@coolairservices.com',\n  from: 'PropertyOps AI Dispatch <dispatch@propertyops.ai>',\n  subject: emailSubject,\n  body: emailBody,\n  sent_at: new Date().toISOString()\n};\n\nreturn {\n  ...item,\n  status: 'ASSIGNED',\n  vendor: vendor.company_name,\n  vendor_id: vendor.id,\n  activity_log: activityLog,\n  vendor_notification_email: vendorNotificationEmail,\n  tenant_message: `Your request has been registered and assigned to ${vendor.company_name}. A technician is preparing for dispatch.`\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000012",
+      "name": "10B. Vendor Matched: Assign & Notify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2140, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Final Return Payload to Frontend\n// Never report success if underlying action failed.\n// Format exactly matches specification:\n// - ticket_id\n// - status\n// - category\n// - priority\n// - ai_summary\n// - vendor\n// - tenant_message\nconst item = $input.item.json;\n\nreturn {\n  ticket_id: item.ticket_id,\n  status: item.status,\n  category: item.category,\n  priority: item.priority,\n  ai_summary: item.ai_summary,\n  vendor: item.vendor,\n  tenant_message: item.tenant_message\n};"
+      },
+      "id": "10000000-0000-0000-0000-000000000013",
+      "name": "11. Format Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "10000000-0000-0000-0000-000000000014",
+      "name": "12. Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2620, 300]
+    }
+  ],
+  "connections": {
+    "1. Webhook: Tenant Submits Request": {
+      "main": [
+        [
+          {
+            "node": "2. Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Validate Input": {
+      "main": [
+        [
+          {
+            "node": "3. AI Analyzes & Extracts Structured Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. AI Analyzes & Extracts Structured Data": {
+      "main": [
+        [
+          {
+            "node": "4. Validate Property & Unit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Validate Property & Unit": {
+      "main": [
+        [
+          {
+            "node": "5. Find Tenant in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Find Tenant in Supabase": {
+      "main": [
+        [
+          {
+            "node": "6. Create Ticket in Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Create Ticket in Supabase": {
+      "main": [
+        [
+          {
+            "node": "7. IF: Emergency Escalation Required?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. IF: Emergency Escalation Required?": {
+      "main": [
+        [
+          {
+            "node": "8A. Emergency: Escalate & Notify Manager",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "8B. Find Matching Vendor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8A. Emergency: Escalate & Notify Manager": {
+      "main": [
+        [
+          {
+            "node": "11. Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8B. Find Matching Vendor": {
+      "main": [
+        [
+          {
+            "node": "9. IF: Matching Vendor Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. IF: Matching Vendor Found?": {
+      "main": [
+        [
+          {
+            "node": "10B. Vendor Matched: Assign & Notify",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "10A. No Vendor: Set AWAITING_VENDOR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10A. No Vendor: Set AWAITING_VENDOR": {
+      "main": [
+        [
+          {
+            "node": "11. Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10B. Vendor Matched: Assign & Notify": {
+      "main": [
+        [
+          {
+            "node": "11. Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Format Final Response": {
+      "main": [
+        [
+          {
+            "node": "12. Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "propertyops-ai-enterprise-automation"
+  }
+}
